@@ -1,0 +1,153 @@
+#!/usr/bin/python
+import socket, re, sys
+
+host = "cs5700.ccs.neu.edu"
+path = "/accounts/login/"
+
+#main crawler function. It takes username and password as arguments
+#retURL function creates socket. Sends data and recieves data. Then it checks the statuscode of received message and takes appropriate action.
+#regular Expressions are used to retrieve session and csrftoken from response
+#Then we create post data manually, which has to be sent with the request.
+#sendPost function takes post data and sends it to server.
+#findLink takes server response and parser the response to find embeded links using HREF
+
+def crawlFunction(args):
+  username = args[1]
+  password = args[2]
+
+  response = retURL(host,"/fakebook/","GET"," ")
+  #retrieve session id and csrf token from webpage.
+  csrfP = re.compile(r'csrftoken=([a-z0-9]+);')
+  sessionP = re.compile(r'sessionid=([a-z0-9]+);')
+  csrftokenL = csrfP.findall(response[0])
+  sessionidL = sessionP.findall(response[0])
+  sessionid = sessionidL[0]
+  csrftoken = csrftokenL[0]
+
+  #creating a parameter which holds data for Post request
+  str = '%2Ffakebook%2F'    #manually  encoding the string
+  postData = "csrfmiddlewaretoken=%s&username=%s&password=%s&next=%s"%(csrftoken,username,password,str)
+
+  #global list which stores the links to be visited
+  global linkTrav
+  linkTrav = []
+  #global list storing flags
+  global flagQueue
+  flagQueue=[]
+
+  reply2 = sendPost(host,path,username,password,csrftoken, sessionid, postData, "")
+  findLink(reply2)
+
+  for each in linkTrav:
+    if each[0] == "/":
+      findLink(retURL2(host,each,"GET","DNT: 1\r\nReferer: http://cs5700.ccs.neu.edu/fakebook/\r\nCookie: csrftoken="+csrftoken+"; sessionid="+sid+"\r\nConnection: keep-alive"))
+
+#it Retrieves URL and checks status code of response. According to status either return same response or retrieve new URL
+
+def retURL(url,path,requestType,data):
+    socketS= socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    socketS.connect((url,80))
+    try:
+        socketS.send("%s %s HTTP/1.1\r\nHost: %s\r\n%s\r\n\r\n" %(requestType,path,host,data))
+    except socket.error:
+        sys.exit('Send Failure')
+    resp1 = socketS.recv(4096)
+    socketS.close()
+    listData = resp1.split("\r\n")
+    #print listData
+    status = listData[0].split(" ")
+    #print status[1]
+    if status[1] == "200":  #Everything is working Fine
+        return [resp1]
+    elif status[1] == "302":    #Redirect
+        redirect = listData[5].split(host)[1]
+        return retURL(host,redirect,"GET"," ")
+    elif status =="400":    #bad request like Unauthorized access or Forbidden or
+        print "HTTP 400: BAD REQUEST"
+    else:
+        print('Illegal Code')
+        sys.exit(1)
+
+#integrated in retURL. No need of this function
+def checkHeader(response):
+    if response[0:4] == 'HTTP':
+        if response[9:12] == '200':
+            return 1
+
+
+def redirNURL(response,data, path):
+    headerList = response[0].split("\r\n")
+    status = headerList[0].split(" ")[1]
+
+    if status == "301" or status == "302":
+        nPath = headerList[6]
+        nPath = nPath.split(host)[1]
+        retURL2(host,nPath,"GET",data)
+        return nPath
+
+    elif status == "500":
+        #print 'inside 500'
+        retURL2(host, path, "GET", data)
+
+    elif status =="200":
+        resp1 = response[0]
+        pattern = re.compile('<h2 class=\\\'secret_flag\\\' style="color:red">FLAG: .{64}</h2>')
+        flags = re.findall(pattern,resp1)
+        if flags:
+            flag = flags[0][48:112]
+            print flag
+            flagQueue.append(flag)
+        return response
+
+    elif status == "403" or status == "404":
+        return ""
+
+def retURL2(url,path,requestType,data):
+    socketS= socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #socketS.settimeout(None)
+    socketS.connect((url,80))
+    try:
+        socketS.send("%s %s HTTP/1.1\r\nHost: %s\r\n%s\r\n\r\n" %(requestType,path,host,data))
+    except socket.error:
+        sys.exit('Send Failure')
+
+    resp = socketS.recv(4096)
+    socketS.close()
+    return redirNURL([resp],data, path)
+
+
+
+def sendPost(url,path,username,password,csrfToken, sessionid, postData ,message):
+    socketS= socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #socketS.settimeout(None)
+    socketS.connect((url,80))
+    try:
+        socketS.send("POST /accounts/login/ HTTP/1.1\r\nHost: cs5700.ccs.neu.edu\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 109\r\nReferer: http://cs5700.ccs.neu.edu/accounts/login/?next=/fakebook/\r\nCookie: csrftoken="+csrfToken+"; sessionid="+sessionid+"\r\n\r\n"+postData)
+    except socket.error:
+        sys.exit('Send Failure')
+    response = socketS.recv(4096)
+    global sid
+    sessionP = re.compile(r'sessionid=([a-z0-9]+);')
+    sid = sessionP.findall(response)[0]
+    #print 'sid is' ,sid
+    try:
+        socketS.send("GET /fakebook/ HTTP/1.1\r\nHost: cs5700.ccs.neu.edu\r\nDNT: 1\r\nReferer: http://cs5700.ccs.neu.edu/accounts/login/?next=/fakebook/\r\nCookie: csrftoken="+csrfToken+"; sessionid="+sid+"\r\nConnection: keep-alive\r\n\r\n")
+    except socket.error:
+        sys.exit('Send Failure')
+    response = socketS.recv(4096)
+    socketS.close()
+    return [response]
+
+#this function finds links using regular express. Then it checks whether URL is unique. If so it adds into links to traverse
+def findLink(response):
+    resp1 = str(response)
+    regPattern = 'a href="(.+?)"'
+    pattern = re.compile(regPattern)
+    queue = re.findall(pattern,resp1)
+    nqueue = set(queue)
+    for each in nqueue:
+        if (each not in linkTrav):
+            linkTrav.append(each)
+
+if __name__ == "__main__":
+    crawlFunction(sys.argv)
